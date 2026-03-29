@@ -1,1 +1,1 @@
-export const DB_NAME="e-book";
+export const DB_NAME="bookstore";
