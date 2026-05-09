@@ -1,5 +1,5 @@
 import { asyncHandler } from "../utils/asyncHandler.js"
-import { Book } from "../models/book.model.js"
+import { Book } from "../models/books.model.js"
 import { Category } from "../models/category.model.js"
 import ApiError from "../utils/ApiError.js"
 import { ApiResponse } from "../utils/ApiResponse.js"

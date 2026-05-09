@@ -1,227 +1,364 @@
 import { asyncHandler } from "../utils/asyncHandler.js"
-import { Cart }  from "../models/cart.model.js"
-import { Book }  from "../models/book.model.js"
-import ApiError  from "../utils/ApiError.js"
+import ApiError from "../utils/ApiError.js"              // ✅ fixed
 import { ApiResponse } from "../utils/ApiResponse.js"
+import { Order } from "../models/order.model.js"
+import { Cart } from "../models/cart.model.js"
+import { Book } from "../models/books.model.js"           // ✅ fixed
+import { Coupon } from "../models/coupon.model.js"
 
-const FREE_DELIVERY_THRESHOLD = 3000
+const FREE_DELIVERY_THRESHOLD = 3000                     // ✅ fixed
+const DELIVERY_CHARGES = 200
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ✅ Place Order
+const createOrder = asyncHandler(async (req, res) => {
+    const { shippingAddress, paymentMethod, couponCode, note } = req.body
 
-const calculateDelivery = (totalAmount) => {
-    return totalAmount >= FREE_DELIVERY_THRESHOLD ? 0 : 200
-}
-
-// ─── Controllers ──────────────────────────────────────────────────────────────
-
-// GET /api/v1/cart
-const getCart = asyncHandler(async (req, res) => {
-    let cart = await Cart.findOne({ user: req.user._id })
-        .populate("items.book", "title coverImage price discountPrice stock isActive")
-
-    // Agar cart nahi hai toh empty cart return karo
-    if (!cart) {
-        return res.status(200).json(
-            new ApiResponse(200, {
-                items:           [],
-                totalAmount:     0,
-                totalItems:      0,
-                deliveryCharges: 200,
-                finalAmount:     200,
-                freeDeliveryOn:  FREE_DELIVERY_THRESHOLD
-            }, "Cart is empty")
-        )
+    if (
+        !shippingAddress?.fullName ||
+        !shippingAddress?.phone    ||
+        !shippingAddress?.street   ||
+        !shippingAddress?.city     ||
+        !shippingAddress?.province
+    ) {
+        throw new ApiError(400, "Complete shipping address is required")
     }
 
-    const deliveryCharges = calculateDelivery(cart.totalAmount)
+    const cart = await Cart.findOne({ user: req.user._id })
+        .populate("items.book")
 
-    return res.status(200).json(
-        new ApiResponse(200, {
-            items:           cart.items,
-            totalAmount:     cart.totalAmount,
-            totalItems:      cart.totalItems,
-            deliveryCharges,
-            finalAmount:     cart.totalAmount + deliveryCharges,
-            freeDeliveryOn:  FREE_DELIVERY_THRESHOLD,
-            isFreeDelivery:  deliveryCharges === 0
-        }, "Cart fetched successfully")
-    )
-})
-
-// POST /api/v1/cart/add
-const addToCart = asyncHandler(async (req, res) => {
-    const { bookId, quantity = 1 } = req.body
-
-    if (!bookId) {
-        throw new ApiError(400, "Book ID is required")
-    }
-
-    if (quantity < 1) {
-        throw new ApiError(400, "Quantity must be at least 1")
-    }
-
-    // Book check karo
-    const book = await Book.findById(bookId)
-    if (!book || !book.isActive) {
-        throw new ApiError(404, "Book not found")
-    }
-
-    // Stock check karo
-    if (book.stock < quantity) {
-        throw new ApiError(400, `Only ${book.stock} items left in stock`)
-    }
-
-    // Price — discountPrice ho toh wo use karo
-    const price = book.discountPrice > 0 ? book.discountPrice : book.price
-
-    // Cart find karo ya naya banao
-    let cart = await Cart.findOne({ user: req.user._id })
-
-    if (!cart) {
-        cart = await Cart.create({
-            user:  req.user._id,
-            items: []
-        })
-    }
-
-    // Check karo book pehle se cart mein hai
-    const existingItem = cart.items.find(
-        item => item.book.toString() === bookId
-    )
-
-    if (existingItem) {
-        // Quantity update karo
-        const newQuantity = existingItem.quantity + quantity
-
-        // Stock check
-        if (book.stock < newQuantity) {
-            throw new ApiError(
-                400,
-                `Only ${book.stock} items available. You already have ${existingItem.quantity} in cart`
-            )
-        }
-        existingItem.quantity = newQuantity
-    } else {
-        // Naya item add karo
-        cart.items.push({ book: bookId, quantity, price })
-    }
-
-    await cart.save()
-
-    // Populate karke return karo
-    await cart.populate("items.book", "title coverImage price discountPrice stock")
-
-    const deliveryCharges = calculateDelivery(cart.totalAmount)
-
-    return res.status(200).json(
-        new ApiResponse(200, {
-            items:           cart.items,
-            totalAmount:     cart.totalAmount,
-            totalItems:      cart.totalItems,
-            deliveryCharges,
-            finalAmount:     cart.totalAmount + deliveryCharges,
-            isFreeDelivery:  deliveryCharges === 0
-        }, "Item added to cart successfully")
-    )
-})
-
-// PATCH /api/v1/cart/update
-const updateQuantity = asyncHandler(async (req, res) => {
-    const { bookId, quantity } = req.body
-
-    if (!bookId || !quantity) {
-        throw new ApiError(400, "Book ID and quantity are required")
-    }
-
-    if (quantity < 1) {
-        throw new ApiError(400, "Quantity must be at least 1")
+    if (!cart || cart.items.length === 0) {
+        throw new ApiError(400, "Cart is empty")
     }
 
     // Stock check
-    const book = await Book.findById(bookId)
-    if (!book || !book.isActive) {
-        throw new ApiError(404, "Book not found")
+    for (const item of cart.items) {
+        if (!item.book) {
+            throw new ApiError(404, "Book not found")
+        }
+        if (item.book.stock < item.quantity) {
+            throw new ApiError(
+                400,
+                `${item.book.title} mein sirf ${item.book.stock} copies available hain`
+            )
+        }
     }
 
-    if (book.stock < quantity) {
-        throw new ApiError(400, `Only ${book.stock} items left in stock`)
-    }
+    // Order items
+    const orderItems = cart.items.map(item => ({
+        book:       item.book._id,
+        quantity:   item.quantity,
+        price:      item.book.discountPrice > 0
+                        ? item.book.discountPrice
+                        : item.book.price,
+        title:      item.book.title,
+        coverImage: item.book.coverImage || ""
+    }))
 
-    const cart = await Cart.findOne({ user: req.user._id })
-    if (!cart) throw new ApiError(404, "Cart not found")
-
-    const item = cart.items.find(
-        item => item.book.toString() === bookId
+    // Total
+    let totalAmount = orderItems.reduce(
+        (total, item) => total + item.price * item.quantity, 0
     )
-    if (!item) throw new ApiError(404, "Item not found in cart")
 
-    item.quantity = quantity
-    await cart.save()
+    // Delivery charges
+    let deliveryCharges = totalAmount >= FREE_DELIVERY_THRESHOLD
+        ? 0
+        : DELIVERY_CHARGES
 
-    await cart.populate("items.book", "title coverImage price discountPrice stock")
+    // Coupon
+    let discount      = 0
+    let appliedCoupon = ""
 
-    const deliveryCharges = calculateDelivery(cart.totalAmount)
+    if (couponCode) {
+        const coupon = await Coupon.findOne({
+            code:     couponCode.toUpperCase(),
+            isActive: true
+        })
 
-    return res.status(200).json(
-        new ApiResponse(200, {
-            items:           cart.items,
-            totalAmount:     cart.totalAmount,
-            totalItems:      cart.totalItems,
-            deliveryCharges,
-            finalAmount:     cart.totalAmount + deliveryCharges,
-            isFreeDelivery:  deliveryCharges === 0
-        }, "Cart updated successfully")
+        if (!coupon) throw new ApiError(400, "Invalid coupon code")
+
+        if (coupon.expiryDate < new Date()) {
+            throw new ApiError(400, "Coupon expired")
+        }
+
+        if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+            throw new ApiError(400, "Coupon usage limit reached")
+        }
+
+        if (coupon.usedBy.includes(req.user._id)) {
+            throw new ApiError(400, "You have already used this coupon")
+        }
+
+        if (totalAmount < coupon.minOrderAmount) {
+            throw new ApiError(
+                400,
+                `Minimum order amount must be Rs.${coupon.minOrderAmount}`
+            )
+        }
+
+        if (coupon.discountType === "percentage") {
+            discount = (totalAmount * coupon.discountValue) / 100
+            if (coupon.maxDiscountAmount) {
+                discount = Math.min(discount, coupon.maxDiscountAmount)
+            }
+        } else {
+            discount = coupon.discountValue
+        }
+
+        appliedCoupon = couponCode.toUpperCase()
+
+        await Coupon.findByIdAndUpdate(coupon._id, {
+            $inc:  { usedCount: 1 },
+            $push: { usedBy: req.user._id }
+        })
+    }
+
+    const finalAmount = totalAmount + deliveryCharges - discount
+
+    // Order create
+    const order = await Order.create({
+        user:            req.user._id,
+        items:           orderItems,
+        shippingAddress: {
+            ...shippingAddress,
+            country: shippingAddress.country || "Pakistan"
+        },
+        totalAmount,
+        deliveryCharges,
+        discount,
+        couponCode:    appliedCoupon,
+        finalAmount,
+        paymentMethod: paymentMethod || "cod",
+        note:          note || ""
+    })
+
+    // Stock reduce
+    for (const item of cart.items) {
+        await Book.findByIdAndUpdate(
+            item.book._id,
+            { $inc: { stock: -item.quantity } }
+        )
+    }
+
+    // Cart clear        ✅ fixed
+    await Cart.findOneAndUpdate(
+        { user: req.user._id },
+        { items: [], totalAmount: 0, totalItems: 0 }
+    )
+
+    return res.status(201).json(
+        new ApiResponse(201, order, "Order placed successfully!")
     )
 })
 
-// DELETE /api/v1/cart/remove/:bookId
-const removeFromCart = asyncHandler(async (req, res) => {
-    const { bookId } = req.params
+// ✅ Get My Orders
+const getMyOrders = asyncHandler(async (req, res) => {
+    const { page = 1, limit = 10, status } = req.query
 
-    const cart = await Cart.findOne({ user: req.user._id })
-    if (!cart) throw new ApiError(404, "Cart not found")
+    const filter = { user: req.user._id }
+    if (status) filter.orderStatus = status
 
-    const itemIndex = cart.items.findIndex(
-        item => item.book.toString() === bookId
+    const skip = (Number(page) - 1) * Number(limit)
+
+    const [orders, total] = await Promise.all([
+        Order.find(filter)
+            .sort("-createdAt")
+            .skip(skip)
+            .limit(Number(limit)),
+        Order.countDocuments(filter)
+    ])
+
+    return res.status(200).json(
+        new ApiResponse(200, {
+            orders,
+            total,
+            page:       Number(page),
+            totalPages: Math.ceil(total / Number(limit))
+        }, "Orders fetched successfully")
     )
-    if (itemIndex === -1) {
-        throw new ApiError(404, "Item not found in cart")
+})
+
+// ✅ Get Single Order
+const getSingleOrder = asyncHandler(async (req, res) => {
+    const order = await Order.findOne({
+        _id:  req.params.id,
+        user: req.user._id
+    }).populate("items.book", "title coverImage")
+
+    if (!order) throw new ApiError(404, "Order not found")
+
+    return res.status(200).json(
+        new ApiResponse(200, order, "Order fetched successfully")
+    )
+})
+
+// ✅ Cancel Order
+const cancelOrder = asyncHandler(async (req, res) => {
+    const { cancelReason } = req.body
+
+    const order = await Order.findOne({
+        _id:  req.params.id,
+        user: req.user._id
+    })
+
+    if (!order) throw new ApiError(404, "Order not found")
+
+    if (!["pending", "confirmed"].includes(order.orderStatus)) {
+        throw new ApiError(
+            400,
+            "Order cannot be cancelled — already shipped or delivered"
+        )
     }
 
-    cart.items.splice(itemIndex, 1)
-    await cart.save()
+    // Stock wapas karo
+    for (const item of order.items) {
+        await Book.findByIdAndUpdate(
+            item.book,
+            { $inc: { stock: item.quantity } }
+        )
+    }
 
-    await cart.populate("items.book", "title coverImage price discountPrice stock")
-
-    const deliveryCharges = calculateDelivery(cart.totalAmount)
+    order.orderStatus  = "cancelled"
+    order.cancelReason = cancelReason || "Cancelled by user"
+    order.cancelledAt  = new Date()   // ✅ Order model mein add karna hoga
+    await order.save()
 
     return res.status(200).json(
-        new ApiResponse(200, {
-            items:           cart.items,
-            totalAmount:     cart.totalAmount,
-            totalItems:      cart.totalItems,
-            deliveryCharges,
-            finalAmount:     cart.totalAmount + deliveryCharges,
-            isFreeDelivery:  deliveryCharges === 0
-        }, "Item removed from cart successfully")
+        new ApiResponse(200, order, "Order cancelled successfully")
     )
 })
 
-// DELETE /api/v1/cart/clear
-const clearCart = asyncHandler(async (req, res) => {
-    const cart = await Cart.findOne({ user: req.user._id })
-    if (!cart) throw new ApiError(404, "Cart not found")
+// ✅ Track Order
+const trackOrder = asyncHandler(async (req, res) => {
+    const order = await Order.findOne({
+        _id:  req.params.id,
+        user: req.user._id
+    }).select("orderNumber orderStatus paymentStatus createdAt updatedAt")
 
-    cart.items = []
-    await cart.save()
+    if (!order) throw new ApiError(404, "Order not found")
+
+    const trackingSteps = [
+        {
+            step:        "pending",
+            title:       "Order Placed",
+            description: "Your order has been placed successfully",
+            completed:   true
+        },
+        {
+            step:        "confirmed",
+            title:       "Order Confirmed",
+            description: "Your order has been confirmed",
+            completed:   ["confirmed", "processing", "shipped", "delivered"]
+                            .includes(order.orderStatus)
+        },
+        {
+            step:        "processing",
+            title:       "Processing",
+            description: "Your order is being packed",
+            completed:   ["processing", "shipped", "delivered"]
+                            .includes(order.orderStatus)
+        },
+        {
+            step:        "shipped",
+            title:       "Shipped",
+            description: "Your order is on the way",
+            completed:   ["shipped", "delivered"]
+                            .includes(order.orderStatus)
+        },
+        {
+            step:        "delivered",
+            title:       "Delivered",
+            description: "Your order has been delivered",
+            completed:   order.orderStatus === "delivered"
+        }
+    ]
 
     return res.status(200).json(
-        new ApiResponse(200, {
-            items:       [],
-            totalAmount: 0,
-            totalItems:  0
-        }, "Cart cleared successfully")
+        new ApiResponse(200, { order, trackingSteps },
+        "Order tracking fetched successfully")
     )
 })
 
-export { getCart, addToCart, updateQuantity, removeFromCart, clearCart }
+// ✅ Admin — Get All Orders
+const getAllOrders = asyncHandler(async (req, res) => {
+    const {
+        page = 1, limit = 10,
+        orderStatus, paymentStatus, paymentMethod
+    } = req.query
+
+    const filter = {}
+    if (orderStatus)   filter.orderStatus   = orderStatus
+    if (paymentStatus) filter.paymentStatus = paymentStatus
+    if (paymentMethod) filter.paymentMethod = paymentMethod
+
+    const skip = (Number(page) - 1) * Number(limit)
+
+    const [orders, total] = await Promise.all([
+        Order.find(filter)
+            .populate("user", "fullName email phone")
+            .sort("-createdAt")
+            .skip(skip)
+            .limit(Number(limit)),
+        Order.countDocuments(filter)
+    ])
+
+    return res.status(200).json(
+        new ApiResponse(200, {
+            orders,
+            total,
+            page:       Number(page),
+            totalPages: Math.ceil(total / Number(limit))
+        }, "All orders fetched successfully")
+    )
+})
+
+// ✅ Admin — Update Order Status
+const updateOrderStatus = asyncHandler(async (req, res) => {
+    const { orderStatus } = req.body
+
+    const validStatuses = [
+        "pending", "confirmed", "processing",
+        "shipped", "delivered", "cancelled"
+    ]
+
+    if (!validStatuses.includes(orderStatus)) {
+        throw new ApiError(400, "Invalid order status")
+    }
+
+    const order = await Order.findById(req.params.id)
+    if (!order) throw new ApiError(404, "Order not found")
+
+    order.orderStatus = orderStatus
+
+    if (orderStatus === "delivered") {
+        order.isDelivered   = true
+        order.deliveredAt   = new Date()
+        order.paymentStatus = "paid"
+        order.isPaid        = true
+        order.paidAt        = new Date()
+    }
+
+    if (orderStatus === "cancelled") {
+        for (const item of order.items) {
+            await Book.findByIdAndUpdate(
+                item.book,
+                { $inc: { stock: item.quantity } }
+            )
+        }
+    }
+
+    await order.save()
+
+    return res.status(200).json(
+        new ApiResponse(200, order, "Order status updated successfully")
+    )
+})
+
+export {
+    createOrder,
+    getMyOrders,
+    getSingleOrder,
+    cancelOrder,
+    trackOrder,
+    getAllOrders,
+    updateOrderStatus
+}

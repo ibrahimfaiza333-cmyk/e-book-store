@@ -39,7 +39,9 @@ const registerUser = asyncHandler(async (req, res) => {
     if (!fullName || !email || !password || !username || !phone || !address) {
         throw new ApiError(400, "All fields are required")
     }
-
+ if(!address?.street || !address?.city ||!address?.province){
+    throw new ApiError(400,"complete address is required")
+ }
     if (!EMAIL_REGEX.test(email)) {
         throw new ApiError(400, "Invalid email format")
     }
@@ -73,7 +75,18 @@ const registerUser = asyncHandler(async (req, res) => {
         email:    email.toLowerCase(),
         password,
         username: username.toLowerCase(),
-        address,
+        addresses: [
+            {
+                fullName,
+                phone,
+                street: address?.street || "",
+                city: address?.city || "",
+                province: address?.province || "",
+                postalCode: address?.postalCode || "",
+                country: address?.country || "Pakistan",
+                isDefault: true
+            }
+        ],
         phone
     })
 
@@ -166,6 +179,17 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
 
     if (!user || user.refreshToken !== incomingRefreshToken) {
         throw new ApiError(401, "Refresh token mismatch — please log in again")
+    }
+    if(!user){
+        throw new ApiError(401,"user not found")
+    }
+
+    if(!user.isActive){
+        throw new ApiError(403,"account banned")
+    }
+
+    if(user.refreshToken !== incomingRefreshToken){
+        await generateAccessAndRefreshToken(user._id)
     }
 
     const { accessToken, refreshToken: newRefreshToken } =

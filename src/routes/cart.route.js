@@ -19,4 +19,4 @@ router.patch("/update",         updateQuantity)
 router.delete("/remove/:bookId",removeFromCart)
 router.delete("/clear",         clearCart)
 
-export default router
+export default Router

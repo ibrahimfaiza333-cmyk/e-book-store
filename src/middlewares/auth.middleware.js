@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken"
 import { User } from "../models/user.model.js"
+import ApiError from "../utils/ApiError.js"
 
 export const verifyJWT = async (req, res, next) => {
     try {
@@ -14,6 +15,7 @@ export const verifyJWT = async (req, res, next) => {
             })
         }
 
+       
         // 2. Verify token
         const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET)
 

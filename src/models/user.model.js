@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema(
     {
         username: {
             type: String,
+            required:[true,"username is required"],
             trim: true,
             unique: true,
             lowercase: true,
@@ -41,7 +42,8 @@ const userSchema = new mongoose.Schema(
         },
         phone: {
             type: String,
-            trim: true
+            trim: true,
+            required:[true,"rider will contact via phone number"]
         },
         role: {
             type: String,

@@ -21,8 +21,8 @@ app.use(cookieParser())
 import userRouter from "./routes/user.route.js" 
 import bookRouter from "./routes/book.route.js"
 import orderRouter from "./routes/order.route.js"
-import  categoryRouter from "./models/category.routes.js";
-import cartRouter from "./models/cart.model.js"
+import  categoryRouter from "./routes/category.route.js";
+import cartRouter from "./routes/cart.route.js"
 //routes decalration
 
 app.use("/api/v1/users", userRouter)
